@@ -12,7 +12,6 @@ On Windows, run as administrator if hotkeys don't register.
 
 import sys
 import threading
-import webbrowser
 
 import keyboard
 import pystray
@@ -22,6 +21,13 @@ from PIL import Image, ImageDraw
 from config import ANTHROPIC_API_KEY, HOTKEY_INSTANT, HOTKEY_CUSTOM
 from screen_capture import capture
 from ai_engine import ask_claude
+
+# Windows console defaults to cp1252; force UTF-8 so unicode prints don't crash.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 # ── Palette ────────────────────────────────────────────────────────────────────
@@ -45,10 +51,9 @@ class ScreenAssistant:
         self.root.withdraw()
         self.root.title("Screen Assistant")
 
-        self._panel: ctk.CTkToplevel | None = None
-        self._q_label: ctk.CTkLabel | None = None
-        self._answer_box: ctk.CTkTextbox | None = None
-        self._last_question: str = ""
+        self._answer_popup: ctk.CTkToplevel | None = None
+        self._answer_q_label: ctk.CTkLabel | None = None
+        self._answer_label: ctk.CTkLabel | None = None
 
         self._setup_tray()
         self._setup_hotkeys()
@@ -64,7 +69,7 @@ class ScreenAssistant:
     def _on_instant(self):
         b64, cx, cy, size = capture()
         question = "What is this?"
-        self.root.after(0, lambda: self._show_or_update_panel(question, "⏳ Thinking…"))
+        self.root.after(0, lambda: self._show_or_update_answer_popup(question, "⏳ Thinking…", cx, cy))
         threading.Thread(
             target=self._ai_worker,
             args=(b64, cx, cy, size, question),
@@ -112,7 +117,7 @@ class ScreenAssistant:
         def submit():
             q = entry.get().strip() or "What is this?"
             popup.destroy()
-            self._show_or_update_panel(q, "⏳ Thinking…")
+            self._show_or_update_answer_popup(q, "⏳ Thinking…", cx, cy)
             threading.Thread(
                 target=self._ai_worker,
                 args=(b64, cx, cy, size, q),
@@ -142,94 +147,93 @@ class ScreenAssistant:
             answer = ask_claude(b64, cx, cy, sw, sh, question)
         except Exception as exc:
             answer = f"Error: {exc}"
-        self.root.after(0, lambda: self._show_or_update_panel(question, answer))
+        self.root.after(0, lambda: self._show_or_update_answer_popup(question, answer, cx, cy))
 
-    # ── Response panel ─────────────────────────────────────────────────────────
+    # ── Answer popup (small, near-cursor) ─────────────────────────────────────
 
-    def _show_or_update_panel(self, question: str, answer: str):
-        self._last_question = question
-        if self._panel and self._panel.winfo_exists():
-            self._q_label.configure(text=f"Q: {question}")
-            self._answer_box.configure(state="normal")
-            self._answer_box.delete("1.0", "end")
-            self._answer_box.insert("1.0", answer)
-            self._answer_box.configure(state="disabled")
+    def _show_or_update_answer_popup(self, question: str, answer: str,
+                                     anchor_x: int, anchor_y: int):
+        if self._answer_popup and self._answer_popup.winfo_exists():
+            self._answer_q_label.configure(text=question)
+            self._answer_label.configure(text=answer)
+            self._reposition_answer_popup(anchor_x, anchor_y)
         else:
-            self._build_panel(question, answer)
+            self._build_answer_popup(question, answer, anchor_x, anchor_y)
 
-    def _build_panel(self, question: str, answer: str):
-        panel = ctk.CTkToplevel(self.root)
-        panel.title("AI Assistant")
-        panel.attributes("-topmost", True)
-        panel.configure(fg_color=BG)
-        self._panel = panel
+    def _build_answer_popup(self, question: str, answer: str,
+                            anchor_x: int, anchor_y: int):
+        popup = ctk.CTkToplevel(self.root)
+        popup.title("")
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(fg_color=BG)
+        self._answer_popup = popup
 
-        sw = panel.winfo_screenwidth()
-        sh = panel.winfo_screenheight()
-        pw = 440
-        ph = sh - 80
-        panel.geometry(f"{pw}x{ph}+{sw - pw - 12}+40")
-        panel.resizable(False, True)
-        panel.minsize(pw, 300)
-
-        # Header
-        hdr = ctk.CTkFrame(panel, fg_color=BG_DARK, corner_radius=0)
-        hdr.pack(fill="x")
+        # Header row: bot mark on the left; quit + close on the right.
+        # Pack ✕ first so it's the rightmost; Quit packs to its left.
+        hdr = ctk.CTkFrame(popup, fg_color="transparent")
+        hdr.pack(fill="x", padx=14, pady=(10, 2))
         ctk.CTkLabel(
-            hdr, text="🤖  AI Assistant",
-            font=("Segoe UI", 14, "bold"), text_color=TEXT,
-        ).pack(side="left", padx=14, pady=10)
+            hdr, text="🤖", text_color=ACCENT,
+            font=("Segoe UI", 13, "bold"),
+        ).pack(side="left")
         ctk.CTkButton(
-            hdr, text="✕", width=32, height=32,
+            hdr, text="✕", width=22, height=22,
             fg_color="transparent", hover_color=MUTED, text_color=SUBTEXT,
-            command=panel.destroy,
-        ).pack(side="right", padx=8, pady=6)
-
-        # Question label
-        self._q_label = ctk.CTkLabel(
-            panel, text=f"Q: {question}",
-            font=("Segoe UI", 11, "italic"), text_color=SUBTEXT,
-            wraplength=400, justify="left",
-        )
-        self._q_label.pack(padx=14, pady=(10, 4), anchor="w")
-
-        ctk.CTkFrame(panel, height=1, fg_color=SURFACE).pack(fill="x", padx=14)
-
-        # Answer textbox
-        self._answer_box = ctk.CTkTextbox(
-            panel,
-            font=("Segoe UI", 12), fg_color=BG_DARK,
-            text_color=TEXT, wrap="word", border_width=0,
-        )
-        self._answer_box.pack(fill="both", expand=True, padx=14, pady=10)
-        self._answer_box.insert("1.0", answer)
-        self._answer_box.configure(state="disabled")
-
-        # Footer buttons
-        ftr = ctk.CTkFrame(panel, fg_color=BG_DARK, corner_radius=0)
-        ftr.pack(fill="x")
-
-        def copy_answer():
-            text = self._answer_box.get("1.0", "end").strip()
-            panel.clipboard_clear()
-            panel.clipboard_append(text)
-
-        def search_docs():
-            q = self._last_question.replace(" ", "+")
-            webbrowser.open(f"https://www.google.com/search?q={q}")
-
+            command=popup.destroy,
+        ).pack(side="right")
         ctk.CTkButton(
-            ftr, text="📋  Copy", width=120,
+            hdr, text="Quit", width=44, height=22,
+            font=("Segoe UI", 10),
+            fg_color="transparent", hover_color="#7d2f2f", text_color=SUBTEXT,
+            command=self._quit_app,
+        ).pack(side="right", padx=(0, 4))
+
+        # Question — small, italic, muted
+        self._answer_q_label = ctk.CTkLabel(
+            popup, text=question,
+            font=("Segoe UI", 10, "italic"), text_color=SUBTEXT,
+            wraplength=350, justify="left", anchor="w",
+        )
+        self._answer_q_label.pack(fill="x", padx=14, pady=(0, 4))
+
+        # Answer — main body
+        self._answer_label = ctk.CTkLabel(
+            popup, text=answer,
+            font=("Segoe UI", 12), text_color=TEXT,
+            wraplength=350, justify="left", anchor="w",
+        )
+        self._answer_label.pack(fill="x", padx=14, pady=(0, 8))
+
+        # Footer: copy button (right-aligned)
+        def copy_answer():
+            popup.clipboard_clear()
+            popup.clipboard_append(self._answer_label.cget("text"))
+
+        ftr = ctk.CTkFrame(popup, fg_color="transparent")
+        ftr.pack(fill="x", padx=14, pady=(0, 10))
+        ctk.CTkButton(
+            ftr, text="📋  Copy", width=78, height=24,
+            font=("Segoe UI", 10),
             fg_color=SURFACE, hover_color=MUTED, text_color=TEXT,
             command=copy_answer,
-        ).pack(side="left", padx=10, pady=8)
-        ctk.CTkButton(
-            ftr, text="🔍  Search docs", width=150,
-            fg_color=SURFACE, hover_color=MUTED, text_color=TEXT,
-            command=search_docs,
-        ).pack(side="left", padx=(0, 10), pady=8)
+        ).pack(side="right")
 
-        panel.bind("<Escape>", lambda _: panel.destroy())
+        popup.bind("<Escape>", lambda _: popup.destroy())
+
+        self._reposition_answer_popup(anchor_x, anchor_y)
+        popup.focus_force()
+
+    def _reposition_answer_popup(self, anchor_x: int, anchor_y: int):
+        popup = self._answer_popup
+        popup.update_idletasks()
+        pw = max(380, popup.winfo_reqwidth())
+        ph = popup.winfo_reqheight()
+        sw = popup.winfo_screenwidth()
+        sh = popup.winfo_screenheight()
+        px = min(max(anchor_x + 20, 10), sw - pw - 10)
+        py = min(max(anchor_y + 20, 10), sh - ph - 10)
+        popup.geometry(f"{pw}x{ph}+{px}+{py}")
 
     # ── System tray ────────────────────────────────────────────────────────────
 
@@ -239,18 +243,21 @@ class ScreenAssistant:
         draw.ellipse([4, 4, 60, 60], fill="#89b4fa")
         draw.ellipse([16, 16, 48, 48], fill="#1e1e2e")
 
-        def quit_app(icon, _item):
-            keyboard.unhook_all_hotkeys()
-            icon.stop()
-            self.root.after(0, self.root.destroy)
-
         self._tray = pystray.Icon(
             "ScreenAssistant",
             img,
             f"Screen Assistant\n{HOTKEY_INSTANT.upper()}: instant\n{HOTKEY_CUSTOM.upper()}: ask",
-            menu=pystray.Menu(pystray.MenuItem("Quit", quit_app)),
+            menu=pystray.Menu(pystray.MenuItem("Quit", lambda _icon, _item: self._quit_app())),
         )
         threading.Thread(target=self._tray.run, daemon=True).start()
+
+    # ── Quit ───────────────────────────────────────────────────────────────────
+
+    def _quit_app(self):
+        keyboard.unhook_all_hotkeys()
+        if self._tray:
+            self._tray.stop()
+        self.root.after(0, self.root.destroy)
 
     # ── Run ────────────────────────────────────────────────────────────────────
 

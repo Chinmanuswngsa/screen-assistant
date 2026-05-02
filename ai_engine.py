@@ -12,9 +12,10 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 SYSTEM_PROMPT = (
     "You are a screen assistant. The user has shared a screenshot of their screen "
     "along with their cursor coordinates (x, y pixels). "
-    "Identify what is at or near the cursor and answer the user's question with "
-    "clear, numbered steps suitable for beginners. Be concise. "
-    "Use the web_search tool only when you genuinely need external documentation "
+    "Identify what is at or near the cursor and answer in 1-3 short sentences "
+    "using plain, everyday language. No bullet points, no numbered steps, no "
+    "preamble — just the answer. "
+    "Only use the web_search tool when you genuinely need external documentation "
     "(e.g. software-specific how-to guides, API references)."
 )
 
@@ -74,7 +75,7 @@ def ask_claude(b64_image: str, cursor_x: int, cursor_y: int,
     while True:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1500,
+            max_tokens=400,
             system=SYSTEM_PROMPT,
             tools=[WEB_SEARCH_TOOL],
             messages=messages,

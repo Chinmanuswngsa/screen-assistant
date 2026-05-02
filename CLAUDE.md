@@ -12,7 +12,12 @@ pip install -r requirements.txt
 python main.py
 ```
 
-The app requires a `.env` file with an Anthropic API key — copy `.env.example` to `.env` and fill it in. On Windows, run as Administrator if global hotkeys fail to register.
+The app needs `ANTHROPIC_API_KEY`. `config.py` calls `load_dotenv(override=True)`, so **`.env` always wins** over any value already in the system environment. This is deliberate — it means rotating the key is just "edit `.env`", with no need to fight a stale `setx` value.
+
+- **`.env` file (preferred):** create `.env` next to `main.py` containing `ANTHROPIC_API_KEY=sk-ant-...`. `.env` is gitignored.
+- **System env var (fallback):** if `.env` is absent or doesn't define the key, `os.getenv("ANTHROPIC_API_KEY")` is used instead. `setx ANTHROPIC_API_KEY "sk-ant-..."` works for that path; restart the terminal after setting.
+
+On Windows, run as Administrator if global hotkeys fail to register.
 
 ## Architecture
 
@@ -29,19 +34,19 @@ The `ScreenAssistant` class in `main.py` owns the entire app: hotkey registratio
 
 | File | Responsibility |
 |---|---|
-| `main.py` | `ScreenAssistant` class — hotkeys, query popup, response panel, tray |
+| `main.py` | `ScreenAssistant` class — hotkeys, query popup, answer popup, tray |
 | `ai_engine.py` | `ask_claude()` — Claude Vision API call with agentic web_search tool loop |
 | `screen_capture.py` | `capture()` — screenshot + cursor position, returns base64 PNG |
-| `config.py` | Loads `ANTHROPIC_API_KEY`, `HOTKEY_INSTANT`, `HOTKEY_CUSTOM` from `.env` |
+| `config.py` | Loads `ANTHROPIC_API_KEY`, `HOTKEY_INSTANT`, `HOTKEY_CUSTOM` from env / `.env` |
 
 ## Hotkeys
 
 | Default | Env var | Behavior |
 |---|---|---|
-| `Ctrl+Shift+H` | `HOTKEY_INSTANT` | Capture → ask "What is this?" → show panel |
-| `Ctrl+Shift+Q` | `HOTKEY_CUSTOM` | Capture → show text input popup → ask custom question → show panel |
+| `Ctrl+Shift+H` | `HOTKEY_INSTANT` | Capture → ask "What is this?" → show answer popup at cursor |
+| `Ctrl+Shift+Q` | `HOTKEY_CUSTOM` | Capture → input popup → custom question → answer popup at cursor |
 
-Screenshot is always taken **before** any UI appears so the popup/panel is never included in the image sent to Claude.
+Screenshot is always taken **before** any UI appears so the popup is never included in the image sent to Claude. The cursor `(cx, cy)` captured at hotkey-press time is threaded through `_ai_worker` so the answer popup can anchor at the original cursor position even if the user has since moved the mouse.
 
 ## AI Engine (`ai_engine.py`)
 
@@ -50,14 +55,16 @@ Screenshot is always taken **before** any UI appears so the popup/panel is never
 2. If Claude responds with `stop_reason == "tool_use"`, executes the `web_search` tool via DuckDuckGo (top 3 results) and feeds results back
 3. Loops until `stop_reason == "end_turn"`, then returns the text response
 
+`SYSTEM_PROMPT` instructs Claude to answer in **1–3 short sentences in plain everyday language** — no bullets, no numbered steps, no preamble. `max_tokens=400` is a hard ceiling that backs this up. Both are tuned to fit the small near-cursor answer popup; loosen them only if you also redesign the popup to handle long answers.
+
 `duckduckgo-search` is an optional dependency — if not installed, web search degrades gracefully with an error string returned to Claude.
 
 ## UI Components (all in `main.py`)
 
-- **Query popup** — `CTkToplevel` with `overrideredirect(True)` (no OS chrome), positioned 20px below/right of cursor, clamped to screen bounds. Capture happens before this appears.
-- **Response panel** — `CTkToplevel` docked to the right edge of the screen, 440px wide, full screen height minus 80px. If the panel is already open when a new answer arrives, it updates in-place rather than spawning a new window. `_q_label` and `_answer_box` are stored as instance attributes for this update path.
+- **Query popup** (`_show_query_popup`) — `CTkToplevel` with `overrideredirect(True)` (no OS chrome), 390×116, positioned 20px below/right of cursor, clamped to screen bounds. Used only by the custom-question hotkey to take typed input.
+- **Answer popup** (`_build_answer_popup` / `_show_or_update_answer_popup`) — small near-cursor `CTkToplevel`, also `overrideredirect(True)`, min width 380px, **height auto-sized** to content via `winfo_reqheight()`. Anchored 20px below/right of the cursor position captured at hotkey time, clamped to screen. Layout: header row (🤖 left; `Quit` + `✕` right), italic muted question label, main answer label, footer Copy button. `✕` and Esc dismiss the popup; **`Quit` exits the entire app** via `_quit_app()` (also wired to the tray menu's Quit item, so both paths share the same teardown). If the popup is already open when a new answer arrives, it updates in-place via `configure(text=...)` and re-clamps geometry — `_answer_q_label` and `_answer_label` are stored as instance attributes for this path. **There is no longer a docked right-side panel.**
 - **Color palette** — Catppuccin Mocha constants defined at the top of `main.py` (`BG`, `SURFACE`, `ACCENT`, etc.).
 
 ## Changing the Model
 
-The model is hardcoded as `"claude-sonnet-4-6"` in `ai_engine.py:75`. To swap it, change that string. The latest Claude model IDs: Opus 4.7 (`claude-opus-4-7`), Sonnet 4.6 (`claude-sonnet-4-6`), Haiku 4.5 (`claude-haiku-4-5-20251001`).
+The model is hardcoded as `"claude-sonnet-4-6"` in `ai_engine.py:77`. To swap it, change that string. The latest Claude model IDs: Opus 4.7 (`claude-opus-4-7`), Sonnet 4.6 (`claude-sonnet-4-6`), Haiku 4.5 (`claude-haiku-4-5-20251001`).

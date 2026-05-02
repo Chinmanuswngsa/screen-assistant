@@ -39,6 +39,32 @@ TEXT      = "#cdd6f4"
 SUBTEXT   = "#a6adc8"
 ACCENT    = "#89b4fa"
 ACCENT2   = "#74c7ec"
+DANGER    = "#f38ba8"
+
+# ── Typography ─────────────────────────────────────────────────────────────────
+# Segoe UI Variable Display/Text are present on Windows 11; tk falls back
+# silently if missing. Centralized so the whole app shares one type scale.
+FONT_FAMILY_UI   = "Segoe UI Variable Display"
+FONT_FAMILY_BODY = "Segoe UI Variable Text"
+
+# ── Popup geometry ─────────────────────────────────────────────────────────────
+# Width is dynamic: popup shrinks to fit short answers, grows up to MAX_W for
+# longer ones, with MIN_W keeping the header (Assistant / Quit App / ✕) from
+# crowding. Height always fits content, capped at MAX_H_RATIO of screen height.
+ANSWER_POPUP_MAX_W   = 380
+ANSWER_POPUP_MIN_W   = 260
+ANSWER_MAX_H_RATIO   = 0.60
+QUERY_POPUP_W        = 420
+QUERY_POPUP_H        = 142
+WIN_PAD              = 12    # transparent margin around each card (room for shadow + rounded corners)
+
+# Sentinel color used as the Windows -transparentcolor key. The outer Toplevel
+# is filled with this color, then made transparent via wm_attributes, leaving
+# only the rounded inner card visible — that's how we get true rounded outer
+# corners (Apple-like) on a tkinter borderless window. Picked to be distinct
+# from every other color in the palette so it never accidentally appears in a
+# rendered widget.
+TRANSPARENT_KEY = "#010101"
 
 
 class ScreenAssistant:
@@ -54,6 +80,9 @@ class ScreenAssistant:
         self._answer_popup: ctk.CTkToplevel | None = None
         self._answer_q_label: ctk.CTkLabel | None = None
         self._answer_label: ctk.CTkLabel | None = None
+        self._answer_anchor: tuple[int, int] = (0, 0)
+        self._drag_dx: int = 0
+        self._drag_dy: int = 0
 
         self._setup_tray()
         self._setup_hotkeys()
@@ -69,7 +98,7 @@ class ScreenAssistant:
     def _on_instant(self):
         b64, cx, cy, size = capture()
         question = "What is this?"
-        self.root.after(0, lambda: self._show_or_update_answer_popup(question, "⏳ Thinking…", cx, cy))
+        self.root.after(0, lambda: self._show_or_update_answer_popup(question, "Thinking…", cx, cy))
         threading.Thread(
             target=self._ai_worker,
             args=(b64, cx, cy, size, question),
@@ -88,36 +117,47 @@ class ScreenAssistant:
         popup.title("")
         popup.overrideredirect(True)
         popup.attributes("-topmost", True)
-        popup.configure(fg_color=BG)
+        popup.configure(fg_color=TRANSPARENT_KEY)
+        try:
+            popup.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
+        except Exception:
+            pass
 
-        pw, ph = 390, 116
+        pw, ph = QUERY_POPUP_W, QUERY_POPUP_H
         sw = popup.winfo_screenwidth()
         sh = popup.winfo_screenheight()
         px = min(cx + 20, sw - pw - 10)
         py = min(cy + 20, sh - ph - 10)
         popup.geometry(f"{pw}x{ph}+{px}+{py}")
 
+        card = ctk.CTkFrame(
+            popup, fg_color=BG, border_width=1,
+            border_color=SURFACE, corner_radius=18,
+        )
+        card.pack(fill="both", expand=True, padx=WIN_PAD, pady=WIN_PAD)
+
         ctk.CTkLabel(
-            popup, text="🤖  Ask AI Assistant",
-            font=("Segoe UI", 13, "bold"), text_color=TEXT,
-        ).pack(pady=(10, 4), padx=14, anchor="w")
+            card, text="Ask AI Assistant",
+            font=(FONT_FAMILY_UI, 13, "bold"), text_color=TEXT,
+        ).pack(pady=(14, 8), padx=18, anchor="w")
 
         entry = ctk.CTkEntry(
-            popup, width=362, font=("Segoe UI", 12),
-            fg_color=SURFACE, border_color=MUTED, text_color=TEXT,
+            card, height=34, font=(FONT_FAMILY_BODY, 12),
+            fg_color=SURFACE, border_color=MUTED, border_width=1,
+            text_color=TEXT, corner_radius=10,
         )
-        entry.pack(padx=14)
+        entry.pack(fill="x", padx=18)
         entry.insert(0, "What is this?")
         entry.select_range(0, "end")
         entry.focus_force()
 
-        btn_row = ctk.CTkFrame(popup, fg_color="transparent")
-        btn_row.pack(pady=8, padx=14, anchor="e")
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(pady=(12, 14), padx=18, anchor="e")
 
         def submit():
             q = entry.get().strip() or "What is this?"
             popup.destroy()
-            self._show_or_update_answer_popup(q, "⏳ Thinking…", cx, cy)
+            self._show_or_update_answer_popup(q, "Thinking…", cx, cy)
             threading.Thread(
                 target=self._ai_worker,
                 args=(b64, cx, cy, size, q),
@@ -125,14 +165,18 @@ class ScreenAssistant:
             ).start()
 
         ctk.CTkButton(
-            btn_row, text="Cancel", width=82,
-            fg_color=MUTED, hover_color=SURFACE, text_color=TEXT,
+            btn_row, text="Cancel", width=82, height=28,
+            font=(FONT_FAMILY_UI, 11),
+            fg_color="transparent", hover_color=SURFACE,
+            text_color=SUBTEXT, border_width=0, corner_radius=14,
             command=popup.destroy,
         ).pack(side="left", padx=(0, 6))
 
         ctk.CTkButton(
-            btn_row, text="Ask ↵", width=82,
-            fg_color=ACCENT, hover_color=ACCENT2, text_color=BG,
+            btn_row, text="Ask  ↵", width=82, height=28,
+            font=(FONT_FAMILY_UI, 11, "bold"),
+            fg_color=ACCENT, hover_color=ACCENT2, text_color=BG_DARK,
+            corner_radius=14,
             command=submit,
         ).pack(side="left")
 
@@ -156,7 +200,9 @@ class ScreenAssistant:
         if self._answer_popup and self._answer_popup.winfo_exists():
             self._answer_q_label.configure(text=question)
             self._answer_label.configure(text=answer)
-            self._reposition_answer_popup(anchor_x, anchor_y)
+            # Resize to fit the new content but keep the user's current top-left
+            # (they may have dragged the popup since it appeared).
+            self._fit_answer_popup(initial=False)
         else:
             self._build_answer_popup(question, answer, anchor_x, anchor_y)
 
@@ -166,74 +212,152 @@ class ScreenAssistant:
         popup.title("")
         popup.overrideredirect(True)
         popup.attributes("-topmost", True)
-        popup.configure(fg_color=BG)
+        # Outer fill is the transparent key; wm_attributes punches it out so
+        # only the rounded card is visible — no rectangular halo around it.
+        popup.configure(fg_color=TRANSPARENT_KEY)
+        try:
+            popup.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
+        except Exception:
+            pass  # non-Windows or unsupported; popup will just have square outer corners
         self._answer_popup = popup
+        self._answer_anchor = (anchor_x, anchor_y)
 
-        # Header row: bot mark on the left; quit + close on the right.
-        # Pack ✕ first so it's the rightmost; Quit packs to its left.
-        hdr = ctk.CTkFrame(popup, fg_color="transparent")
-        hdr.pack(fill="x", padx=14, pady=(10, 2))
-        ctk.CTkLabel(
-            hdr, text="🤖", text_color=ACCENT,
-            font=("Segoe UI", 13, "bold"),
-        ).pack(side="left")
+        # Rounded "bubble" card — Apple-style large radius, soft border.
+        card = ctk.CTkFrame(
+            popup, fg_color=BG, border_width=1,
+            border_color=SURFACE, corner_radius=18,
+        )
+        card.pack(fill="both", expand=True, padx=WIN_PAD, pady=WIN_PAD)
+
+        # Grid so the answer row absorbs slack on resize; header/footer stay put.
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(0, weight=0)
+        card.grid_rowconfigure(1, weight=0)
+        card.grid_rowconfigure(2, weight=1)
+        card.grid_rowconfigure(3, weight=0)
+
+        # — Header (also the drag handle)
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
+
+        title = ctk.CTkLabel(
+            hdr, text="Assistant",
+            font=(FONT_FAMILY_UI, 13, "bold"), text_color=TEXT,
+        )
+        title.pack(side="left")
+
+        # Close (just the popup) — round pill, prominent on hover.
         ctk.CTkButton(
-            hdr, text="✕", width=22, height=22,
-            fg_color="transparent", hover_color=MUTED, text_color=SUBTEXT,
+            hdr, text="✕", width=28, height=28,
+            font=(FONT_FAMILY_UI, 13, "bold"),
+            fg_color=SURFACE, hover_color=DANGER,
+            text_color=TEXT, corner_radius=14,
             command=popup.destroy,
         ).pack(side="right")
+
+        # Quit (the whole app) — labelled clearly so it isn't confused with ✕.
         ctk.CTkButton(
-            hdr, text="Quit", width=44, height=22,
-            font=("Segoe UI", 10),
-            fg_color="transparent", hover_color="#7d2f2f", text_color=SUBTEXT,
+            hdr, text="Quit App", width=70, height=28,
+            font=(FONT_FAMILY_UI, 10),
+            fg_color="transparent", hover_color=SURFACE,
+            text_color=SUBTEXT, corner_radius=14,
             command=self._quit_app,
-        ).pack(side="right", padx=(0, 4))
+        ).pack(side="right", padx=(0, 6))
 
-        # Question — small, italic, muted
+        # Drag-to-move: bind on the header frame and the title label only,
+        # so clicks on the buttons keep their normal behavior.
+        for w in (hdr, title):
+            w.bind("<ButtonPress-1>", self._drag_start)
+            w.bind("<B1-Motion>",     self._drag_motion)
+
+        wrap = ANSWER_POPUP_MAX_W - 2 * WIN_PAD - 36
+
+        # — Question (italic-feel via muted color + smaller body font)
         self._answer_q_label = ctk.CTkLabel(
-            popup, text=question,
-            font=("Segoe UI", 10, "italic"), text_color=SUBTEXT,
-            wraplength=350, justify="left", anchor="w",
+            card, text=question,
+            font=(FONT_FAMILY_BODY, 11), text_color=SUBTEXT,
+            anchor="w", justify="left",
+            wraplength=wrap,
         )
-        self._answer_q_label.pack(fill="x", padx=14, pady=(0, 4))
+        self._answer_q_label.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 8))
 
-        # Answer — main body
+        # — Answer body. Plain label so the popup auto-sizes to content; if
+        # content somehow exceeds the height cap, it'll clip rather than
+        # scroll (acceptable given the system prompt forces ≤3 sentences).
         self._answer_label = ctk.CTkLabel(
-            popup, text=answer,
-            font=("Segoe UI", 12), text_color=TEXT,
-            wraplength=350, justify="left", anchor="w",
+            card, text=answer,
+            font=(FONT_FAMILY_BODY, 12), text_color=TEXT,
+            anchor="nw", justify="left",
+            wraplength=wrap,
         )
-        self._answer_label.pack(fill="x", padx=14, pady=(0, 8))
+        self._answer_label.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 12))
 
-        # Footer: copy button (right-aligned)
+        # — Footer
         def copy_answer():
             popup.clipboard_clear()
             popup.clipboard_append(self._answer_label.cget("text"))
 
-        ftr = ctk.CTkFrame(popup, fg_color="transparent")
-        ftr.pack(fill="x", padx=14, pady=(0, 10))
+        ftr = ctk.CTkFrame(card, fg_color="transparent")
+        ftr.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 14))
         ctk.CTkButton(
-            ftr, text="📋  Copy", width=78, height=24,
-            font=("Segoe UI", 10),
+            ftr, text="Copy", width=72, height=28,
+            font=(FONT_FAMILY_UI, 10, "bold"),
             fg_color=SURFACE, hover_color=MUTED, text_color=TEXT,
+            corner_radius=14,
             command=copy_answer,
         ).pack(side="right")
 
         popup.bind("<Escape>", lambda _: popup.destroy())
-
-        self._reposition_answer_popup(anchor_x, anchor_y)
+        self._fit_answer_popup(initial=True)
         popup.focus_force()
 
-    def _reposition_answer_popup(self, anchor_x: int, anchor_y: int):
+    # ── Sizing & dragging helpers ─────────────────────────────────────────────
+
+    def _fit_answer_popup(self, initial: bool):
+        """Size the popup to its content in *both* dimensions.
+
+        Width shrinks for short answers and grows up to MAX_W for longer ones
+        (longer than that and content wraps inside the label, so width caps).
+        Height fits content, capped at a fraction of screen height.
+
+        On initial show, anchor near the cursor. On subsequent updates (e.g.
+        Thinking… → final answer), keep the user's current top-left so a drag
+        isn't undone — only clamp if the new size would push it off-screen.
+        """
         popup = self._answer_popup
         popup.update_idletasks()
-        pw = max(380, popup.winfo_reqwidth())
-        ph = popup.winfo_reqheight()
         sw = popup.winfo_screenwidth()
         sh = popup.winfo_screenheight()
-        px = min(max(anchor_x + 20, 10), sw - pw - 10)
-        py = min(max(anchor_y + 20, 10), sh - ph - 10)
-        popup.geometry(f"{pw}x{ph}+{px}+{py}")
+
+        needed_w = popup.winfo_reqwidth()
+        needed_h = popup.winfo_reqheight()
+        w = max(ANSWER_POPUP_MIN_W, min(needed_w, ANSWER_POPUP_MAX_W))
+        h = min(needed_h, int(sh * ANSWER_MAX_H_RATIO))
+
+        if initial:
+            ax, ay = self._answer_anchor
+            px = min(max(ax + 20, 10), sw - w - 10)
+            py = min(max(ay + 20, 10), sh - h - 10)
+        else:
+            px = max(10, min(popup.winfo_x(), sw - w - 10))
+            py = max(10, min(popup.winfo_y(), sh - h - 10))
+
+        popup.geometry(f"{w}x{h}+{px}+{py}")
+
+    def _drag_start(self, event):
+        popup = self._answer_popup
+        if not popup:
+            return
+        self._drag_dx = event.x_root - popup.winfo_x()
+        self._drag_dy = event.y_root - popup.winfo_y()
+
+    def _drag_motion(self, event):
+        popup = self._answer_popup
+        if not popup:
+            return
+        nx = event.x_root - self._drag_dx
+        ny = event.y_root - self._drag_dy
+        popup.geometry(f"+{nx}+{ny}")
 
     # ── System tray ────────────────────────────────────────────────────────────
 

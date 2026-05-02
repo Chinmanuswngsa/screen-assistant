@@ -1,5 +1,5 @@
 import anthropic
-from config import ANTHROPIC_API_KEY
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 
 try:
     from duckduckgo_search import DDGS
@@ -10,11 +10,13 @@ except ImportError:
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 SYSTEM_PROMPT = (
-    "You are a screen assistant. The user has shared a screenshot of their screen "
-    "along with their cursor coordinates (x, y pixels). "
-    "Identify what is at or near the cursor and answer in 1-3 short sentences "
-    "using plain, everyday language. No bullet points, no numbered steps, no "
-    "preamble — just the answer. "
+    "You are a screen assistant. The user has shared a screenshot of their screen. "
+    "A red hollow ring is drawn on the image at the cursor position — use the ring "
+    "as the source of truth for what the user is pointing at, not the raw (x, y) "
+    "coordinates (which are provided only as a hint). "
+    "Identify what is inside or directly under the ring and answer in 1-3 short "
+    "sentences using plain, everyday language. No bullet points, no numbered steps, "
+    "no preamble — just the answer. "
     "Only use the web_search tool when you genuinely need external documentation "
     "(e.g. software-specific how-to guides, API references)."
 )
@@ -74,7 +76,7 @@ def ask_claude(b64_image: str, cursor_x: int, cursor_y: int,
 
     while True:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=ANTHROPIC_MODEL,
             max_tokens=400,
             system=SYSTEM_PROMPT,
             tools=[WEB_SEARCH_TOOL],

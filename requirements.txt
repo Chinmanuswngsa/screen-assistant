@@ -1,0 +1,8 @@
+anthropic
+Pillow
+keyboard
+pystray
+customtkinter
+duckduckgo-search
+pyautogui
+python-dotenv
